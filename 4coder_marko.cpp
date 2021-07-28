@@ -15,7 +15,6 @@
 #include "generated/managed_id_metadata.cpp"
 #endif
 
-bool global_edit_mode = true;
 String_ID edit_map_id;
 String_ID normal_map_id;
 
@@ -32,12 +31,14 @@ set_current_mapid(Application_Links* app, Command_Map_ID mapid)
 CUSTOM_COMMAND_SIG(enter_edit_mode)
 {
     set_current_mapid(app, edit_map_id);
+    active_color_table.arrays[defcolor_cursor].vals[0] = 0xffff5533;
     // print_message(app, string_u8_litexpr("Test"));
 }
 
 CUSTOM_COMMAND_SIG(enter_normal_mode)
 {
     set_current_mapid(app, normal_map_id);
+    active_color_table.arrays[defcolor_cursor].vals[0] = 0xff80ff80;
 }
 
 CUSTOM_COMMAND_SIG(go_end_of_line_and_edit_mode)
@@ -50,6 +51,14 @@ CUSTOM_COMMAND_SIG(go_beginning_of_line_and_edit_mode)
 {
     seek_beginning_of_line(app);
     enter_edit_mode(app);
+}
+
+CUSTOM_COMMAND_SIG(new_line_and_edit_mode)
+{
+
+    seek_end_of_line(app);
+    enter_edit_mode(app);
+    write_text(app, string_u8_litexpr("\n"));
 }
 
 function void
@@ -119,6 +128,7 @@ marko_setup_bindings(Mapping* mapping, i64 global_id, i64 file_id, i64 normal_id
     Bind(snipe_backward_whitespace_or_token_boundary, KeyCode_Backspace, KeyCode_Alt);
     Bind(delete_line,                  KeyCode_D, KeyCode_Alt);
     Bind(delete_char,                  KeyCode_X);
+    Bind(new_line_and_edit_mode,       KeyCode_O);
 
     //
     SelectMap(edit_id);
