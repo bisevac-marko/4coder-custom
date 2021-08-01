@@ -223,6 +223,25 @@ CUSTOM_COMMAND_SIG(toggle_build_panel)
     IsBuildPanelOpen = !IsBuildPanelOpen;
 }
 
+CUSTOM_COMMAND_SIG(list_current_buffer_functions_other_panel)
+{
+    View_ID view = get_active_view(app, Access_ReadVisible);
+    Buffer_ID buffer = view_get_buffer(app, view, Access_ReadVisible);
+
+    change_to_build_panel(app);
+    IsBuildPanelOpen = true;
+
+    list_all_functions(app, buffer);
+}
+
+CUSTOM_COMMAND_SIG(list_all_buffers_functions_other_panel)
+{
+    change_to_build_panel(app);
+    IsBuildPanelOpen = true;
+
+    list_all_functions_all_buffers(app);
+}
+
 function void
 marko_setup_bindings(Mapping* mapping, i64 global_id, i64 file_id, i64 normal_id, i64 edit_id)
 {
@@ -244,6 +263,14 @@ marko_setup_bindings(Mapping* mapping, i64 global_id, i64 file_id, i64 normal_id
     Bind(command_lister,                KeyCode_X, KeyCode_Alt);
     Bind(interactive_new,               KeyCode_N, KeyCode_Alt);
     Bind(interactive_open_or_new,       KeyCode_F, KeyCode_Alt);
+    Bind(interactive_switch_buffer,            KeyCode_B, KeyCode_Alt);
+    Bind(quick_swap_buffer,                    KeyCode_B, KeyCode_Control);
+    Bind(move_up,                              KeyCode_Up);
+    Bind(move_down,                            KeyCode_Down);
+    Bind(move_left,                            KeyCode_Left);
+    Bind(move_right,                           KeyCode_Right);
+    Bind(goto_next_jump,                       KeyCode_E, KeyCode_Alt);
+    Bind(goto_prev_jump,                       KeyCode_Q, KeyCode_Alt);
     
     SelectMap(file_id);
     ParentMap(global_id);
@@ -254,6 +281,7 @@ marko_setup_bindings(Mapping* mapping, i64 global_id, i64 file_id, i64 normal_id
     BindCore(click_set_cursor_and_mark,         CoreCode_ClickActivateView);
     BindMouseMove(click_set_cursor_if_lbutton);
     ////////////
+
     
     //
     SelectMap(normal_id);
@@ -297,13 +325,11 @@ marko_setup_bindings(Mapping* mapping, i64 global_id, i64 file_id, i64 normal_id
     Bind(replace_in_range,                     KeyCode_R, KeyCode_Alt);
     Bind(replace_in_buffer,                    KeyCode_R, KeyCode_Alt, KeyCode_Control);
     Bind(duplicate_line,                       KeyCode_J, KeyCode_Alt, KeyCode_Control);
-    Bind(interactive_switch_buffer,            KeyCode_B, KeyCode_Alt);
-    Bind(quick_swap_buffer,                    KeyCode_B, KeyCode_Control);
     Bind(write_todo,                           KeyCode_T, KeyCode_Control);
     Bind(toggle_build_panel,                   KeyCode_Tick);
     Bind(build_project,                        KeyCode_M, KeyCode_Alt);
-    Bind(goto_next_jump,                       KeyCode_E, KeyCode_Alt);
-    Bind(goto_prev_jump,                            KeyCode_Q, KeyCode_Alt);
+    Bind(list_current_buffer_functions_other_panel, KeyCode_P, KeyCode_Alt);
+    Bind(list_all_buffers_functions_other_panel,    KeyCode_P, KeyCode_Alt, KeyCode_Control);
     
     //
     SelectMap(edit_id);
@@ -323,10 +349,6 @@ marko_setup_bindings(Mapping* mapping, i64 global_id, i64 file_id, i64 normal_id
     Bind(move_up_to_blank_line_end,            KeyCode_K, KeyCode_Alt);
     Bind(move_down_to_blank_line_end,          KeyCode_J, KeyCode_Alt);
     Bind(backspace_char,                       KeyCode_Backspace);
-    Bind(move_up,                              KeyCode_Up);
-    Bind(move_down,                            KeyCode_Down);
-    Bind(move_left,                            KeyCode_Left);
-    Bind(move_right,                           KeyCode_Right);
     
     BindTextInput(write_text_and_auto_indent);
 }
@@ -353,7 +375,9 @@ BUFFER_HOOK_SIG(marko_begin_buffer)
                     string_match(ext, string_u8_litexpr("cc"))){
                     treat_as_code = true;
                 }
-                if (string_match(ext, string_u8_litexpr("cs"))){
+                if (string_match(ext, string_u8_litexpr("cs")) ||
+                    string_match(ext, string_u8_litexpr("mdesk"))) 
+                {
                     treat_as_code = true;
                 }
                 
