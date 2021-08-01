@@ -15,8 +15,9 @@
 #include "generated/managed_id_metadata.cpp"
 #endif
 
-String_ID edit_map_id;
-String_ID normal_map_id;
+static String_ID edit_map_id;
+static String_ID normal_map_id;
+static bool IsBuildPanelOpen = false;
 
 void 
 set_current_mapid(Application_Links* app, Command_Map_ID mapid) 
@@ -32,8 +33,8 @@ CUSTOM_COMMAND_SIG(enter_edit_mode)
 {
     set_current_mapid(app, edit_map_id);
     active_color_table.arrays[defcolor_cursor].vals[0] = 0xffff5533;
-    // print_message(app, string_u8_litexpr("Test"));
 }
+
 
 CUSTOM_COMMAND_SIG(enter_normal_mode)
 {
@@ -55,10 +56,171 @@ CUSTOM_COMMAND_SIG(go_beginning_of_line_and_edit_mode)
 
 CUSTOM_COMMAND_SIG(new_line_and_edit_mode)
 {
-
+    
     seek_end_of_line(app);
     enter_edit_mode(app);
     write_text(app, string_u8_litexpr("\n"));
+}
+
+CUSTOM_COMMAND_SIG(delete_range_and_edit)
+{
+    delete_range(app);
+    enter_edit_mode(app);
+}
+
+CUSTOM_COMMAND_SIG(kill_to_end_of_line)
+{
+    View_ID view = get_active_view(app, 0);
+    
+    i64 pos2 = view_get_cursor_pos(app, view);
+    seek_end_of_line(app);
+    i64 pos1 = view_get_cursor_pos(app, view);
+    
+    Range_i64 range = Ii64(pos1, pos2);
+    if(pos1 == pos2)
+    {
+        range.max += 1;
+    }
+    
+    Buffer_ID buffer = view_get_buffer(app, view, 0);
+    buffer_replace_range(app, buffer, range, string_u8_empty);
+    enter_edit_mode(app);
+}
+
+inline bool IsAlpha(char c)
+{
+    bool result = (((c >= 'a') && (c <= 'z')) ||
+                   ((c >= 'A') && (c <= 'Z')));
+    
+    return(result);
+}
+
+inline bool IsDigit(char c)
+{
+    return (c >= '0' && c <= '9');
+}
+
+inline char GetChar(Application_Links* app, i64 offset = 0)
+{
+    View_ID view = get_active_view(app, 0);
+    Buffer_ID buffer = view_get_buffer(app, view, 0);
+
+    i64 pos = view_get_cursor_pos(app, view);
+    char c = buffer_get_char(app, buffer, pos + offset);
+    return c;
+}
+
+inline bool IsOther(char c)
+{
+    return ((c >= 58 && c <= 63) ||
+            (c >= 33 && c <= 47) ||
+            (c >= 91 && c <= 96) ||
+            (c >= 123 && c <= 126));
+}
+
+bool IsWhitespace(char c)
+{
+    return (c == ' ' || c == '\n');
+}
+
+typedef void MoveCursorFunc(Application_Links* app);
+
+void SkipWhitespace(Application_Links* app, MoveCursorFunc* move_cursor)
+{
+    char c = GetChar(app);
+    while (c == ' ' || c == '\n')
+    {
+        move_cursor(app);
+        c = GetChar(app);
+    }
+}
+
+CUSTOM_COMMAND_SIG(cursor_move_left)
+{
+    u8 c = GetChar(app);
+
+    if (IsAlpha(c) || c == '_' || IsDigit(c))
+    {
+        while(IsAlpha(c) || c == '_' || IsDigit(c))
+        {
+            move_left(app);
+            c = GetChar(app, -1);
+        }
+    }
+    else if (IsOther(c))
+    {
+        move_left(app);
+        c = GetChar(app);
+
+        while (IsAlpha(c) || c == '_' || IsDigit(c))
+        {
+            move_left(app);
+            c = GetChar(app, -1);
+        }
+    }
+    else if (IsWhitespace(c))
+    {
+        SkipWhitespace(app, move_left);
+    }
+
+}
+
+
+
+CUSTOM_COMMAND_SIG(cursor_move_right)
+{
+    u8 c = GetChar(app);
+
+    if (IsAlpha(c) || c == '_' || IsDigit(c))
+    {
+        while(IsAlpha(c) || c == '_' || IsDigit(c))
+        {
+            move_right(app);
+            c = GetChar(app);
+        }
+    }
+    else if (IsOther(c))
+    {
+        while (IsOther(c))
+        {
+            move_right(app);
+            c = GetChar(app);
+        }
+    }
+
+    if (IsWhitespace(c))
+    {
+        SkipWhitespace(app, move_right);
+    }
+
+}
+
+
+CUSTOM_COMMAND_SIG(backspace_delete_whole_word)
+{
+    snipe_backward_whitespace_or_token_boundary(app);
+    enter_edit_mode(app);
+}
+
+
+
+CUSTOM_COMMAND_SIG(build_project)
+{
+    build_in_build_panel(app);
+    IsBuildPanelOpen = true;
+}
+
+CUSTOM_COMMAND_SIG(toggle_build_panel)
+{
+    if (IsBuildPanelOpen)
+    {
+        close_build_panel(app);
+    }
+    else
+    {
+        change_to_build_panel(app);
+    }
+    IsBuildPanelOpen = !IsBuildPanelOpen;
 }
 
 function void
@@ -66,9 +228,9 @@ marko_setup_bindings(Mapping* mapping, i64 global_id, i64 file_id, i64 normal_id
 {
     MappingScope();
     SelectMapping(mapping);
-
+    
     SelectMap(global_id);
-
+    
     // Essential
     BindCore(default_startup, CoreCode_Startup);
     BindCore(default_try_exit, CoreCode_TryExit);
@@ -82,77 +244,90 @@ marko_setup_bindings(Mapping* mapping, i64 global_id, i64 file_id, i64 normal_id
     Bind(command_lister,                KeyCode_X, KeyCode_Alt);
     Bind(interactive_new,               KeyCode_N, KeyCode_Alt);
     Bind(interactive_open_or_new,       KeyCode_F, KeyCode_Alt);
-
+    
     SelectMap(file_id);
     ParentMap(global_id);
-
+    
     // Essential
-    BindMouse(click_set_cursor_and_mark, MouseCode_Left);
-    BindMouseRelease(click_set_cursor, MouseCode_Left);
-    BindCore(click_set_cursor_and_mark, CoreCode_ClickActivateView);
+    BindMouse(click_set_cursor_and_mark,        MouseCode_Left);
+    BindMouseRelease(click_set_cursor,          MouseCode_Left);
+    BindCore(click_set_cursor_and_mark,         CoreCode_ClickActivateView);
     BindMouseMove(click_set_cursor_if_lbutton);
     ////////////
-
+    
     //
     SelectMap(normal_id);
     ParentMap(file_id);
-
-    Bind(move_up,                KeyCode_K);
-    Bind(move_down,              KeyCode_J);
-    Bind(move_left,              KeyCode_H);
-    Bind(move_right,             KeyCode_L);
-    Bind(move_left_whitespace_boundary,    KeyCode_B);
-    Bind(move_right_whitespace_boundary,   KeyCode_W);
-    Bind(move_up_to_blank_line_end,        KeyCode_K, KeyCode_Alt);
-    Bind(move_down_to_blank_line_end,      KeyCode_J, KeyCode_Alt);
-    Bind(move_line_up,                     KeyCode_K, KeyCode_Control);
-    Bind(move_line_down,                   KeyCode_J, KeyCode_Control);
-    Bind(goto_line,                        KeyCode_G, KeyCode_Alt);
-    Bind(enter_edit_mode,        KeyCode_I);
-    Bind(backspace_alpha_numeric_boundary, KeyCode_Backspace, KeyCode_Control);
-    Bind(search,                 KeyCode_ForwardSlash);
-    Bind(copy,                   KeyCode_Y);
-    Bind(cut,                    KeyCode_X, KeyCode_Control);
-    Bind(paste_and_indent,       KeyCode_P);
-    Bind(redo,                   KeyCode_R);
-    Bind(undo,                   KeyCode_U);
-    Bind(goto_beginning_of_file, KeyCode_Home);
-    Bind(goto_end_of_file,       KeyCode_End);
-    Bind(go_beginning_of_line_and_edit_mode, KeyCode_I, KeyCode_Shift);
-    Bind(go_end_of_line_and_edit_mode, KeyCode_A, KeyCode_Shift);
-    Bind(kill_buffer,                  KeyCode_K, KeyCode_Control, KeyCode_Shift);
-    Bind(comment_line_toggle,          KeyCode_C, KeyCode_Alt);
-    Bind(word_complete,                KeyCode_Tab);
-    Bind(set_mark,                     KeyCode_S);
-    Bind(save,                         KeyCode_S, KeyCode_Alt);
-    Bind(snipe_backward_whitespace_or_token_boundary, KeyCode_Backspace, KeyCode_Alt);
-    Bind(delete_line,                  KeyCode_D, KeyCode_Alt);
-    Bind(delete_char,                  KeyCode_X);
-    Bind(new_line_and_edit_mode,       KeyCode_O);
-
+    
+    Bind(move_up,                              KeyCode_K);
+    Bind(move_down,                            KeyCode_J);
+    Bind(move_left,                            KeyCode_H);
+    Bind(move_right,                           KeyCode_L);
+    Bind(cursor_move_left,                     KeyCode_B);
+    Bind(cursor_move_right,                    KeyCode_W);
+    Bind(move_up_to_blank_line_end,            KeyCode_K, KeyCode_Alt);
+    Bind(move_down_to_blank_line_end,          KeyCode_J, KeyCode_Alt);
+    Bind(move_line_up,                         KeyCode_K, KeyCode_Control);
+    Bind(move_line_down,                       KeyCode_J, KeyCode_Control);
+    Bind(goto_line,                            KeyCode_G, KeyCode_Alt);
+    Bind(enter_edit_mode,                      KeyCode_I);
+    Bind(backspace_alpha_numeric_boundary,     KeyCode_Backspace, KeyCode_Control);
+    Bind(search,                               KeyCode_ForwardSlash);
+    Bind(copy,                                 KeyCode_Y);
+    Bind(cut,                                  KeyCode_X, KeyCode_Control);
+    Bind(paste_and_indent,                     KeyCode_P);
+    Bind(redo,                                 KeyCode_R, KeyCode_Control);
+    Bind(undo,                                 KeyCode_U);
+    Bind(goto_beginning_of_file,               KeyCode_Home);
+    Bind(goto_end_of_file,                     KeyCode_End);
+    Bind(go_beginning_of_line_and_edit_mode,   KeyCode_I, KeyCode_Shift);
+    Bind(go_end_of_line_and_edit_mode,         KeyCode_A, KeyCode_Shift);
+    Bind(kill_buffer,                          KeyCode_K, KeyCode_Control, KeyCode_Shift);
+    Bind(comment_line_toggle,                  KeyCode_C, KeyCode_Alt);
+    Bind(word_complete,                        KeyCode_Tab);
+    Bind(set_mark,                             KeyCode_S);
+    Bind(save,                                 KeyCode_S, KeyCode_Alt);
+    Bind(backspace_delete_whole_word,          KeyCode_Backspace, KeyCode_Alt);
+    Bind(delete_line,                          KeyCode_D, KeyCode_Alt);
+    Bind(delete_char,                          KeyCode_X);
+    Bind(new_line_and_edit_mode,               KeyCode_O);
+    Bind(cursor_mark_swap,                     KeyCode_A, KeyCode_Alt);
+    Bind(delete_range_and_edit,                KeyCode_C, KeyCode_Control);
+    Bind(kill_to_end_of_line,                  KeyCode_C, KeyCode_Shift);
+    Bind(replace_in_range,                     KeyCode_R, KeyCode_Alt);
+    Bind(replace_in_buffer,                    KeyCode_R, KeyCode_Alt, KeyCode_Control);
+    Bind(duplicate_line,                       KeyCode_J, KeyCode_Alt, KeyCode_Control);
+    Bind(interactive_switch_buffer,            KeyCode_B, KeyCode_Alt);
+    Bind(quick_swap_buffer,                    KeyCode_B, KeyCode_Control);
+    Bind(write_todo,                           KeyCode_T, KeyCode_Control);
+    Bind(toggle_build_panel,                   KeyCode_Tick);
+    Bind(build_project,                        KeyCode_M, KeyCode_Alt);
+    Bind(goto_next_jump,                       KeyCode_E, KeyCode_Alt);
+    Bind(goto_prev_jump,                            KeyCode_Q, KeyCode_Alt);
+    
     //
     SelectMap(edit_id);
     ParentMap(file_id);
-
-    Bind(enter_normal_mode,             KeyCode_CapsLock);
-    Bind(enter_normal_mode,             KeyCode_Escape);
-    Bind(backspace_alpha_numeric_boundary, KeyCode_Backspace, KeyCode_Control);
-    Bind(snipe_backward_whitespace_or_token_boundary, KeyCode_Backspace, KeyCode_Alt);
-    Bind(move_line_up,                     KeyCode_K, KeyCode_Control);
-    Bind(move_line_down,                   KeyCode_J, KeyCode_Control);
-    Bind(goto_beginning_of_file, KeyCode_Home);
-    Bind(goto_end_of_file,       KeyCode_End);
-    Bind(word_complete,                KeyCode_Tab);
-    Bind(move_left_whitespace_boundary,    KeyCode_Left, KeyCode_Control);
-    Bind(move_right_whitespace_boundary,   KeyCode_Right, KeyCode_Control);
-    Bind(move_up_to_blank_line_end,        KeyCode_K, KeyCode_Alt);
-    Bind(move_down_to_blank_line_end,      KeyCode_J, KeyCode_Alt);
-    Bind(backspace_char,         KeyCode_Backspace);
-    Bind(move_up,                KeyCode_Up);
-    Bind(move_down,              KeyCode_Down);
-    Bind(move_left,              KeyCode_Left);
-    Bind(move_right,             KeyCode_Right);
-
+    
+    Bind(enter_normal_mode,                    KeyCode_CapsLock);
+    Bind(enter_normal_mode,                    KeyCode_Escape);
+    Bind(backspace_alpha_numeric_boundary,     KeyCode_Backspace, KeyCode_Control);
+    Bind(backspace_delete_whole_word,          KeyCode_Backspace, KeyCode_Alt);
+    Bind(move_line_up,                         KeyCode_K, KeyCode_Control);
+    Bind(move_line_down,                       KeyCode_J, KeyCode_Control);
+    Bind(goto_beginning_of_file,               KeyCode_Home);
+    Bind(goto_end_of_file,                     KeyCode_End);
+    Bind(word_complete,                        KeyCode_Tab);
+    Bind(move_left_whitespace_boundary,        KeyCode_Left, KeyCode_Control);
+    Bind(move_right_whitespace_boundary,       KeyCode_Right, KeyCode_Control);
+    Bind(move_up_to_blank_line_end,            KeyCode_K, KeyCode_Alt);
+    Bind(move_down_to_blank_line_end,          KeyCode_J, KeyCode_Alt);
+    Bind(backspace_char,                       KeyCode_Backspace);
+    Bind(move_up,                              KeyCode_Up);
+    Bind(move_down,                            KeyCode_Down);
+    Bind(move_left,                            KeyCode_Left);
+    Bind(move_right,                           KeyCode_Right);
+    
     BindTextInput(write_text_and_auto_indent);
 }
 
@@ -176,6 +351,9 @@ BUFFER_HOOK_SIG(marko_begin_buffer)
                     string_match(ext, string_u8_litexpr("c")) ||
                     string_match(ext, string_u8_litexpr("hpp")) ||
                     string_match(ext, string_u8_litexpr("cc"))){
+                    treat_as_code = true;
+                }
+                if (string_match(ext, string_u8_litexpr("cs"))){
                     treat_as_code = true;
                 }
                 
@@ -300,15 +478,15 @@ custom_layer_init(Application_Links *app){
     
     set_all_default_hooks(app);
     mapping_init(tctx, &framework_mapping);
-
+    
     String_ID global_map_id = vars_save_string_lit("keys_global");
     String_ID file_map_id = vars_save_string_lit("keys_file");
     normal_map_id = vars_save_string_lit("keys_normal");
     edit_map_id = vars_save_string_lit("keys_edit");
-
+    
     // setup_essential_mapping(&framework_mapping, global_map_id, file_map_id, normal_map_id);
 	marko_setup_bindings(&framework_mapping, global_map_id, file_map_id, normal_map_id, edit_map_id);
-
+    
     set_custom_hook(app, HookID_BeginBuffer, marko_begin_buffer);
     // set_current_mapid(app, normal_map_id);
 }
