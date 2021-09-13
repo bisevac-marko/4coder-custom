@@ -9,358 +9,69 @@
 
 #include "4coder_default_include.cpp"
 
+static String_ID edit_map_id;
+static String_ID normal_map_id;
+static bool global_build_panel_open = false;
+static Arena global_main_arena;
 
-CUSTOM_ID( colors, primitive_highlight_type );
-CUSTOM_ID( colors, primitive_highlight_function );
-CUSTOM_ID( colors, primitive_highlight_macro );
-CUSTOM_ID( colors, primitive_highlight_4coder_command );
+#include "marko_cpp_highlight.cpp"
+#include "marko_modes.cpp"
+#include "marko_cursor.cpp"
 
-
-
-/* NOTE: end is the index of the last item, NOT one past the last item. */
-function void primitive_highlight_quick_sort_hashes_notes( u64* hashes, Code_Index_Note** notes, u64 start, u64 end ) {
-    
-    if ( hashes && start < end ) {
-        
-        u64 pivot_index = ( start + end ) / 2;
-        u64 pivot_hash = hashes[ pivot_index ];
-        
-        u64 i = start, j = end;
-        
-        while ( 1 ) {
-            
-            while ( hashes[ i ] < pivot_hash ) {
-                i++;
-            }
-            
-            while ( hashes[ j ] > pivot_hash ) {
-                j--;
-            }
-            
-            if ( i < j ) {
-                
-                u64 hash_temp = hashes[ i ];
-                hashes[ i ] = hashes[ j ];
-                hashes[ j ] = hash_temp;
-                
-                Code_Index_Note* temp = notes[ i ];
-                notes[ i ] = notes[ j ];
-                notes[ j ] = temp;
-                
-                i++;
-                j--;
-                
-            } else {
-                
-                break;
-            }
-        }
-        
-        primitive_highlight_quick_sort_hashes_notes( hashes, notes, start, j );
-        primitive_highlight_quick_sort_hashes_notes( hashes, notes, j + 1, end );
-    }
-}
-
-typedef struct primitive_highlight_hashes_notes_t {
-    u64* hashes;
-    Code_Index_Note** notes;
-    i32 count;
-} primitive_highlight_hashes_notes_t;
-
-function primitive_highlight_hashes_notes_t primitive_highlight_create_big_note_array( Application_Links* app, Arena* arena ) {
-    
-    ProfileScope( app, "create_big_note_array" );
-    
-    primitive_highlight_hashes_notes_t hashes_notes = { 0 };
-    
-    Buffer_ID buffer_it = get_buffer_next( app, 0, Access_Always );
-    
-#if 0
-    /* NOTE: locking the index only in this function seems to cost more than locking in the primitive_highlight_draw_cpp_token_colors function. */
-    code_index_lock( );
-#endif
-    
-    while ( buffer_it ) {
-        
-        Code_Index_File *file = code_index_get_file( buffer_it );
-        
-        if ( file ) {
-            hashes_notes.count += file->note_array.count;
-        }
-        
-        buffer_it = get_buffer_next( app, buffer_it, Access_Always );
-    }
-    
-    hashes_notes.hashes = push_array( arena, u64, hashes_notes.count );
-    hashes_notes.notes = push_array( arena, Code_Index_Note*, hashes_notes.count );
-    
-    i32 count = 0;
-    
-    {
-        ProfileScope( app, "create hashes" );
-        
-        buffer_it = get_buffer_next( app, 0, Access_Always );
-        
-        while ( buffer_it ) {
-            
-            Code_Index_File *file = code_index_get_file( buffer_it );
-            
-            if ( file ) {
-                
-                for ( i32 i = 0; i < file->note_array.count; i++ ) {
-                    hashes_notes.notes[ count ] = file->note_array.ptrs[ i ];
-                    hashes_notes.hashes[ count ] = table_hash_u8( hashes_notes.notes[ count ]->text.str, hashes_notes.notes[ count ]->text.size );
-                    count++;
-                }
-            }
-            
-            buffer_it = get_buffer_next( app, buffer_it, Access_Always );
-        }
-    }
-    
-#if 0
-    code_index_unlock( );
-#endif
-    
-    if ( count ) {
-        ProfileScope( app, "quick_sort_hashes_notes" );
-        primitive_highlight_quick_sort_hashes_notes( hashes_notes.hashes, hashes_notes.notes, 0, count - 1 );
-    }
-    
-    return hashes_notes;
-}
-
-function Code_Index_Note* primitive_highlight_get_note( Application_Links* app, primitive_highlight_hashes_notes_t* hashes_notes, String_Const_u8 name ) {
-    
-    u8 type_weight[ 4 ];
-    type_weight[ CodeIndexNote_4coderCommand ] = 1;
-    type_weight[ CodeIndexNote_Function ] = 2;
-    type_weight[ CodeIndexNote_Type ] = 3;
-    type_weight[ CodeIndexNote_Macro ] = 4;
-    
-    ProfileScope( app, "get_note" );
-    
-    Code_Index_Note* result = 0;
-    
-    u64 name_hash = table_hash_u8( name.str, name.size );
-    
-    i32 start = 0;
-    i32 end = hashes_notes->count - 1;
-    
-    while ( start <= end ) {
-        
-        i32 midle = ( start + end ) / 2;
-        
-        u64 note_hash = hashes_notes->hashes[ midle ];
-        
-        if ( name_hash < note_hash ) {
-            end = midle - 1;
-        } else if ( name_hash > note_hash ) {
-            start = midle + 1;
-        } else {
-            
-            ProfileBlockNamed( app, "solve collisions", solve_collisions );
-            
-            while ( midle - 1 >= start && hashes_notes->hashes[ midle - 1 ] == name_hash ) {
-                midle--;
-            }
-            
-            u8 current_weight = 0;
-            
-            while ( midle <= end && hashes_notes->hashes[ midle ] == name_hash ) {
-                
-                Code_Index_Note* note = hashes_notes->notes[ midle ];
-                // Assert( note->kind < ArrayCount( type_weight ) );
-                
-                if ( type_weight[ note->note_kind ] > current_weight ) {
-                    
-                    if ( string_compare( name, note->text ) == 0 ) {
-                        
-                        current_weight = type_weight[ note->note_kind ];
-                        result = note;
-                        
-                        if ( current_weight == 4 ) {
-                            break;
-                        }
-                    }
-                }
-                
-                midle++;
-            }
-            
-            ProfileCloseNow( solve_collisions );
-            
-            break;
-        }
-    }
-    
-    return result;
-}
-
-/* NOTE: This funciton is a modification of 'draw_cpp_token_colors' from '4coder_draw.cpp'. */
-function void primitive_highlight_draw_cpp_token_colors( Application_Links *app, Text_Layout_ID text_layout_id, Token_Array *array, Buffer_ID buffer ) {
-    
-    Range_i64 visible_range = text_layout_get_visible_range( app, text_layout_id );
-    i64 first_index = token_index_from_pos( array, visible_range.first );
-    Token_Iterator_Array it = token_iterator_index( 0, array, first_index );
-    
-    /* NOTE: Start modification. */
-    Scratch_Block scratch( app );
-    
-#if 1
-    code_index_lock( );
-#endif
-    
-    Temp_Memory notes_temp = begin_temp( scratch );
-    primitive_highlight_hashes_notes_t hashes_notes = primitive_highlight_create_big_note_array( app, scratch );
-    
-    ProfileBlockNamed( app, "token loop", token_loop );
-    /* NOTE: End modification. */
-    
-    for ( ; ; ) {
-        
-        Token *token = token_it_read( &it );
-        
-        if ( token->pos >= visible_range.one_past_last ){
-            break;
-        }
-        
-        /* NOTE: Start modification. */
-        FColor color = fcolor_id( defcolor_text_default );
-        b32 colored = false;
-        
-        if ( token->kind == TokenBaseKind_Identifier ) {
-            
-            Temp_Memory temp = begin_temp( scratch );
-            String_Const_u8 lexeme = push_token_lexeme( app, scratch, buffer, token );
-            Code_Index_Note* note = primitive_highlight_get_note( app, &hashes_notes, lexeme );
-            end_temp( temp );
-            
-            if ( note ) {
-                
-                switch ( note->note_kind ) {
-                    case CodeIndexNote_Type: {
-                        color = fcolor_id( primitive_highlight_type );
-                    } break;
-                    
-                    case CodeIndexNote_Function: {
-                        color = fcolor_id( primitive_highlight_function );
-                    } break;
-                    
-                    case CodeIndexNote_Macro: {
-                        color = fcolor_id( primitive_highlight_macro );
-                    } break;
-                    
-                    case CodeIndexNote_4coderCommand: {
-                        /* NOTE: 4coder doesn't create those notes as of 4.1.6. */
-                        color = fcolor_id( primitive_highlight_4coder_command );
-                    } break;
-                }
-                
-                colored = true;
-                
-#if 1
-                if ( note->note_kind == CodeIndexNote_Type ) {
-                    
-                    Token_Iterator_Array dot_arrow_it = it;
-                    
-                    if ( token_it_dec_non_whitespace( &dot_arrow_it ) ) {
-                        
-                        Token* dot_arrow = token_it_read( &dot_arrow_it );
-                        
-                        if ( dot_arrow->kind == TokenBaseKind_Operator && ( dot_arrow->sub_kind == TokenCppKind_Dot || dot_arrow->sub_kind == TokenCppKind_Arrow ) ) {
-                            colored = false;
-                        }
-                    }
-                }
-#endif
-            }
-        }
-        
-        if( !colored ) {
-            color = get_token_color_cpp( *token );
-        }
-        /* NOTE: End modification. */
-        
-        ARGB_Color argb = fcolor_resolve( color );
-        paint_text_color( app, text_layout_id, Ii64_size( token->pos, token->size ), argb );
-        
-        if ( !token_it_inc_all( &it ) ){
-            break;
-        }
-    }
-    
-#if 1
-    code_index_unlock( );
-#endif
-    
-    /* NOTE: Start modification. */
-    ProfileCloseNow( token_loop );
-    end_temp( notes_temp );
-    /* NOTE: End modification. */
-}
-
-// NOTE(allen): Users can declare their own managed IDs here.
+// HELLO
 
 #if !defined(META_PASS)
 #include "generated/managed_id_metadata.cpp"
 #endif
 
-static String_ID edit_map_id;
-static String_ID normal_map_id;
-static bool IsBuildPanelOpen = false;
-
-void 
-set_current_mapid(Application_Links* app, Command_Map_ID mapid) 
+CUSTOM_COMMAND_SIG(RunProgram)
 {
-    View_ID view = get_active_view(app, 0);
-    Buffer_ID buffer = view_get_buffer(app, view, 0);
-    Managed_Scope scope = buffer_get_managed_scope(app, buffer);
-    Command_Map_ID* map_id_ptr = scope_attachment(app, scope, buffer_map_id, Command_Map_ID);
-    *map_id_ptr = mapid;
-}
-
-CUSTOM_COMMAND_SIG(enter_edit_mode)
-{
-    set_current_mapid(app, edit_map_id);
-    active_color_table.arrays[defcolor_cursor].vals[0] = 0xffff5533;
-}
-
-
-CUSTOM_COMMAND_SIG(enter_normal_mode)
-{
-    set_current_mapid(app, normal_map_id);
-    active_color_table.arrays[defcolor_cursor].vals[0] = 0xff80ff80;
-}
-
-CUSTOM_COMMAND_SIG(go_end_of_line_and_edit_mode)
-{
-    seek_end_of_line(app);
-    enter_edit_mode(app);
-}
-
-CUSTOM_COMMAND_SIG(go_beginning_of_line_and_edit_mode)
-{
-    seek_beginning_of_line(app);
-    enter_edit_mode(app);
-}
-
-CUSTOM_COMMAND_SIG(new_line_and_edit_mode)
-{
+    prj_exec_command_name(app, SCu8("run"));
     
+}
+
+CUSTOM_COMMAND_SIG(NewLineAndEditMode)
+{
+    EnterEditMode(app);
     seek_end_of_line(app);
-    enter_edit_mode(app);
     write_text(app, string_u8_litexpr("\n"));
 }
 
-CUSTOM_COMMAND_SIG(delete_range_and_edit)
+CUSTOM_COMMAND_SIG(DeleteRange)
 {
-    delete_range(app);
-    enter_edit_mode(app);
+    View_ID view = get_active_view(app, Access_ReadWriteVisible);
+    Buffer_ID buffer = view_get_buffer(app, view, Access_ReadWriteVisible);
+    Range_i64 range = get_view_range(app, view);
+    clipboard_post_buffer_range(app, 0, buffer, range);
+    buffer_replace_range(app, buffer, range, string_u8_empty);
 }
 
-CUSTOM_COMMAND_SIG(kill_to_end_of_line)
+CUSTOM_COMMAND_SIG(DeleteLine)
 {
+    View_ID view = get_active_view(app, Access_ReadWriteVisible);
+    Buffer_ID buffer = view_get_buffer(app, view, Access_ReadWriteVisible);
+    i64 pos = view_get_cursor_pos(app, view);
+    i64 line = get_line_number_from_pos(app, buffer, pos);
+    Range_i64 range = get_line_pos_range(app, buffer, line);
+    range.end += 1;
+    i32 size = (i32)buffer_get_size(app, buffer);
+    range.end = clamp_top(range.end, size);
+    if (range_size(range) == 0 ||
+        buffer_get_char(app, buffer, range.end - 1) != '\n'){
+        range.start -= 1;
+        range.first = clamp_bot(0, range.first);
+    }
+    
+    clipboard_post_buffer_range(app, 0, buffer, range);
+    
+    buffer_replace_range(app, buffer, range, string_u8_litexpr(""));
+}
+
+
+
+CUSTOM_COMMAND_SIG(KillToEndOfLine)
+{
+    EnterEditMode(app);
     View_ID view = get_active_view(app, 0);
     
     i64 pos2 = view_get_cursor_pos(app, view);
@@ -374,169 +85,199 @@ CUSTOM_COMMAND_SIG(kill_to_end_of_line)
     }
     
     Buffer_ID buffer = view_get_buffer(app, view, 0);
+    clipboard_post_buffer_range(app, 0, buffer, range);
     buffer_replace_range(app, buffer, range, string_u8_empty);
-    enter_edit_mode(app);
 }
 
-inline bool IsAlpha(char c)
+CUSTOM_COMMAND_SIG(BackspaceDeleteAndEditMode)
 {
-    bool result = (((c >= 'a') && (c <= 'z')) ||
-                   ((c >= 'A') && (c <= 'Z')));
-    
-    return(result);
+    EnterEditMode(app);
+    backspace_alpha_numeric_boundary(app);
 }
 
-inline bool IsDigit(char c)
+CUSTOM_COMMAND_SIG(BackspaceDeleteWholeWord)
 {
-    return (c >= '0' && c <= '9');
-}
-
-inline char GetChar(Application_Links* app, i64 offset = 0)
-{
-    View_ID view = get_active_view(app, 0);
-    Buffer_ID buffer = view_get_buffer(app, view, 0);
-    
-    i64 pos = view_get_cursor_pos(app, view);
-    char c = buffer_get_char(app, buffer, pos + offset);
-    return c;
-}
-
-inline bool IsOther(char c)
-{
-    return ((c >= 58 && c <= 63) ||
-            (c >= 33 && c <= 47) ||
-            (c >= 91 && c <= 96) ||
-            (c >= 123 && c <= 126));
-}
-
-bool IsWhitespace(char c)
-{
-    return (c == ' ' || c == '\n');
-}
-
-typedef void MoveCursorFunc(Application_Links* app);
-
-void SkipWhitespace(Application_Links* app, MoveCursorFunc* move_cursor)
-{
-    char c = GetChar(app);
-    while (c == ' ' || c == '\n')
-    {
-        move_cursor(app);
-        c = GetChar(app);
-    }
-}
-
-CUSTOM_COMMAND_SIG(cursor_move_left)
-{
-    u8 c = GetChar(app);
-    
-    if (IsAlpha(c) || c == '_' || IsDigit(c))
-    {
-        while(IsAlpha(c) || c == '_' || IsDigit(c))
-        {
-            move_left(app);
-            c = GetChar(app, -1);
-        }
-    }
-    else if (IsOther(c))
-    {
-        move_left(app);
-        c = GetChar(app);
-        
-        while (IsAlpha(c) || c == '_' || IsDigit(c))
-        {
-            move_left(app);
-            c = GetChar(app, -1);
-        }
-    }
-    else if (IsWhitespace(c))
-    {
-        SkipWhitespace(app, move_left);
-    }
-    
-}
-
-
-
-CUSTOM_COMMAND_SIG(cursor_move_right)
-{
-    u8 c = GetChar(app);
-    
-    if (IsAlpha(c) || c == '_' || IsDigit(c))
-    {
-        while(IsAlpha(c) || c == '_' || IsDigit(c))
-        {
-            move_right(app);
-            c = GetChar(app);
-        }
-    }
-    else if (IsOther(c))
-    {
-        while (IsOther(c))
-        {
-            move_right(app);
-            c = GetChar(app);
-        }
-    }
-    
-    if (IsWhitespace(c))
-    {
-        SkipWhitespace(app, move_right);
-    }
-    
-}
-
-
-CUSTOM_COMMAND_SIG(backspace_delete_whole_word)
-{
+    EnterEditMode(app);
     snipe_backward_whitespace_or_token_boundary(app);
-    enter_edit_mode(app);
 }
 
 
 
-CUSTOM_COMMAND_SIG(build_project)
+CUSTOM_COMMAND_SIG(BuildProject)
 {
     build_in_build_panel(app);
-    IsBuildPanelOpen = true;
+    global_build_panel_open = true;
 }
 
-CUSTOM_COMMAND_SIG(toggle_build_panel)
+CUSTOM_COMMAND_SIG(ToggleBuildPannel)
 {
-    if (IsBuildPanelOpen)
+    if (!global_build_panel_open)
     {
-        close_build_panel(app);
+        View_ID view = get_or_open_build_panel(app);
+        if (view != 0)
+        {
+            Buffer_ID buffer = get_buffer_by_name(app, string_u8_litexpr("*compilation*"), Access_Always);
+            view_set_buffer(app, view, buffer, 0);
+            //lock_jump_buffer(app, string_u8_litexpr("*compilation*"));
+        }
+        
     }
     else
     {
-        change_to_build_panel(app);
+        close_build_panel(app);
     }
-    IsBuildPanelOpen = !IsBuildPanelOpen;
+    global_build_panel_open = !global_build_panel_open;
 }
 
-CUSTOM_COMMAND_SIG(cursor_jump_up)
-{
-    page_up(app);
-    center_view(app);
+
+#undef Bind
+
+#include <windows.h>
+
+#define Bind(F, K, ...) \
+map_set_binding_l(m, map, BindFWrap_(F), InputEventKind_KeyStroke, (K), __VA_ARGS__, 0)
+
+static b32
+IsCodeFile(char* name, u64 len){
+    b32 is_code = false;
+    if (len >= 5){
+        char* ext = &name[len - 4];
+        if (ext[0] == '.' && ext[1] == 'c' && ext[2] == 'p' && ext[3] == 'p'){
+            is_code = true;
+        }
+        else if (ext[0] == '.' && ext[1] == 'h' && ext[2] == 'p' && ext[3] == 'p'){
+            is_code = true;
+        }
+    }
+    if (len >= 4){
+        char* ext = &name[len - 3];
+        if (ext[0] == '.' && ext[1] == 'c' && ext[2] == 'c'){
+            is_code = true;
+        }
+    }
+    if (len >= 3){
+        char* ext = &name[len - 2];
+        if (ext[0] == '.' && ext[1] == 'h'){
+            is_code = true;
+        }
+        else if (ext[0] == '.' && ext[1] == 'c'){
+            is_code = true;
+        }
+    }
+    return(is_code);
 }
 
-CUSTOM_COMMAND_SIG(cursor_jump_down)
+CUSTOM_COMMAND_SIG(Marko4CoderStartup)
 {
-    page_down(app);
-    center_view(app);
+    
+    ProfileScope(app, "marko 4coder startup");
+    User_Input input = get_current_input(app);
+    
+    if (match_core_code(&input, CoreCode_Startup)){
+        String_Const_u8_Array file_names = input.event.core.file_names;
+        load_themes_default_folder(app);
+        default_4coder_initialize(app, file_names);
+        default_4coder_side_by_side_panels(app, file_names);
+        b32 auto_load = def_get_config_b32(vars_save_string_lit("automatically_load_project"));
+        if (auto_load){
+            load_project(app);
+        }
+    }
+    
+    {
+        def_audio_init();
+    }
+    
+    {
+        def_enable_virtual_whitespace = def_get_config_b32(vars_save_string_lit("enable_virtual_whitespace"));
+        clear_all_layouts(app);
+    }
+    /*
+    String_Const_u8 project_dir = def_get_config_string(&main_arena, vars_save_string_lit("project_directory"));
+
+    WIN32_FIND_DATA find_data;
+
+    HANDLE file_handle = FindFirstFileA((char*)project_dir.str, &find_data);
+
+    if (file_handle == INVALID_HANDLE_VALUE)
+    {
+        OutputDebugStringA((char*)project_dir.str);
+        return;
+    }
+
+
+    // Remove the '*'
+    project_dir.str[project_dir.size-1] = '\0';
+
+    //set_hot_directory(app, full_file_name);
+
+    Scratch_Block scratch(app);
+
+    while (FindNextFileA(file_handle, &find_data) != 0)
+    {
+        if (IsCodeFile(find_data.cFileName, cstring_length(find_data.cFileName)))
+        {
+            String_Const_u8 full_file_name =
+                push_u8_stringf(scratch, "%.*s%s", string_expand(project_dir), find_data.cFileName);
+
+            Buffer_Create_Flag flags = BufferCreate_NeverNew;
+            create_buffer(app, full_file_name, flags);
+            // OutputDebugStringA(find_data.cFileName);
+        }
+    }
+    */
+}
+
+CUSTOM_COMMAND_SIG(ReplayKeyboardMacro)
+{
+    keyboard_macro_replay(app);
+}
+
+
+CUSTOM_COMMAND_SIG(LastSearchForward)
+{
+    
+    View_ID view = get_active_view(app, Access_ReadVisible);
+    Buffer_ID buffer = view_get_buffer(app, view, Access_ReadVisible);
+    
+    i64 new_pos = 0;
+    String_Const_u8 last_search = SCu8(previous_isearch_query, cstring_length(previous_isearch_query));
+    i64 pos = view_get_cursor_pos(app, view) + cstring_length(previous_isearch_query);
+    
+    seek_string_forward(app, buffer, pos - 1, 0, last_search, &new_pos);
+    
+    if (new_pos != buffer_get_size(app, buffer))
+    {
+        view_set_cursor_and_preferred_x(app, view, seek_pos(new_pos));
+    }
+}
+
+CUSTOM_COMMAND_SIG(LastSearchBackward)
+{
+    View_ID view = get_active_view(app, Access_ReadVisible);
+    Buffer_ID buffer = view_get_buffer(app, view, Access_ReadVisible);
+    i64 pos = view_get_cursor_pos(app, view);
+    
+    i64 new_pos = 0;
+    String_Const_u8 last_search = SCu8(previous_isearch_query, cstring_length(previous_isearch_query));
+    seek_string_backward(app, buffer, pos - 1, 0, last_search, &new_pos);
+    
+    if (new_pos != -1)
+    {
+        view_set_cursor_and_preferred_x(app, view, seek_pos(new_pos));
+    }
 }
 
 
 function void
-marko_setup_bindings(Mapping* mapping, i64 global_id, i64 file_id, i64 normal_id, i64 edit_id)
+MarkoSetupBindings(Mapping* mapping, i64 global_id, i64 normal_id, i64 edit_id)
 {
     MappingScope();
     SelectMapping(mapping);
     
     SelectMap(global_id);
-    
     // Essential
-    BindCore(default_startup, CoreCode_Startup);
+    BindCore(Marko4CoderStartup, CoreCode_Startup);
     BindCore(default_try_exit, CoreCode_TryExit);
     BindCore(clipboard_record_clip, CoreCode_NewClipboardContents);
     BindMouseWheel(mouse_wheel_scroll);
@@ -556,9 +297,8 @@ marko_setup_bindings(Mapping* mapping, i64 global_id, i64 file_id, i64 normal_id
     Bind(move_right,                           KeyCode_Right);
     Bind(goto_next_jump,                       KeyCode_E, KeyCode_Alt);
     Bind(goto_prev_jump,                       KeyCode_Q, KeyCode_Alt);
-    
-    SelectMap(file_id);
-    ParentMap(global_id);
+    Bind(load_theme_current_buffer,            KeyCode_F8);
+    Bind(RunProgram,                           KeyCode_F5);
     
     // Essential
     BindMouse(click_set_cursor_and_mark,        MouseCode_Left);
@@ -567,69 +307,76 @@ marko_setup_bindings(Mapping* mapping, i64 global_id, i64 file_id, i64 normal_id
     BindMouseMove(click_set_cursor_if_lbutton);
     ////////////
     Bind(write_todo,                           KeyCode_T, KeyCode_Control);
-    Bind(backspace_alpha_numeric_boundary,     KeyCode_Backspace, KeyCode_Control);
     Bind(goto_beginning_of_file,               KeyCode_Home);
     Bind(goto_end_of_file,                     KeyCode_End);
     
+    Bind(word_complete_drop_down,              KeyCode_Tab, KeyCode_Control);
+    Bind(word_complete,                        KeyCode_Tab);
     
-    //
     SelectMap(normal_id);
-    ParentMap(file_id);
+    ParentMap(global_id);
     
     Bind(move_up,                              KeyCode_K);
     Bind(move_down,                            KeyCode_J);
     Bind(move_left,                            KeyCode_H);
     Bind(move_right,                           KeyCode_L);
-    Bind(cursor_move_left,                     KeyCode_B);
-    Bind(cursor_move_right,                    KeyCode_W);
-    Bind(cursor_jump_up,                       KeyCode_K, KeyCode_Alt);
-    Bind(cursor_jump_down,                     KeyCode_J, KeyCode_Alt);
+    Bind(CursorMoveLeft,                     KeyCode_B);
+    Bind(CursorMoveRight,                    KeyCode_W);
+    Bind(CursorJumpUp,                       KeyCode_K, KeyCode_Alt);
+    Bind(CursorJumpDown, KeyCode_J, KeyCode_Alt);
     Bind(move_line_up,                         KeyCode_K, KeyCode_Control);
     Bind(move_line_down,                       KeyCode_J, KeyCode_Control);
     Bind(goto_line,                            KeyCode_G, KeyCode_Alt);
-    Bind(enter_edit_mode,                      KeyCode_I);
+    Bind(EnterEditMode,                      KeyCode_I);
     Bind(search,                               KeyCode_ForwardSlash);
+    Bind(search_identifier,                    KeyCode_ForwardSlash, KeyCode_Control);
     Bind(copy,                                 KeyCode_Y);
     Bind(cut,                                  KeyCode_X, KeyCode_Control);
     Bind(paste_and_indent,                     KeyCode_P);
     Bind(redo,                                 KeyCode_R, KeyCode_Control);
     Bind(undo,                                 KeyCode_U);
-    Bind(go_beginning_of_line_and_edit_mode,   KeyCode_I, KeyCode_Shift);
-    Bind(go_end_of_line_and_edit_mode,         KeyCode_A, KeyCode_Shift);
+    Bind(GoBeginningOfLineAndEditMode,   KeyCode_I, KeyCode_Shift);
+    Bind(GotEndOfLineAndEditMode,         KeyCode_A, KeyCode_Shift);
     Bind(kill_buffer,                          KeyCode_K, KeyCode_Control, KeyCode_Shift);
-    Bind(comment_line_toggle,                  KeyCode_I, KeyCode_Alt);
-    Bind(word_complete,                        KeyCode_Tab);
+    Bind(comment_line_toggle,                  KeyCode_C, KeyCode_Alt);
     Bind(set_mark,                             KeyCode_S);
-    helloBind(save,                                 KeyCode_S, KeyCode_Alt);
-    Bind(backspace_delete_whole_word,          KeyCode_Backspace, KeyCode_Alt);
-    Bind(delete_line,                          KeyCode_D, KeyCode_Control);
-    Bind(delete_range,                         KeyCode_D, KeyCode_Alt);
+    Bind(save,                                 KeyCode_S, KeyCode_Alt);
+    Bind(BackspaceDeleteWholeWord,             KeyCode_Backspace, KeyCode_Alt);
+    Bind(BackspaceDeleteAndEditMode,           KeyCode_Backspace, KeyCode_Control);
+    Bind(DeleteLine,                          KeyCode_D, KeyCode_Control);
+    Bind(DeleteRange,                         KeyCode_D, KeyCode_Alt);
     Bind(delete_char,                          KeyCode_X);
-    Bind(new_line_and_edit_mode,               KeyCode_O);
+    Bind(NewLineAndEditMode,               KeyCode_O);
     Bind(cursor_mark_swap,                     KeyCode_A, KeyCode_Alt);
-    Bind(delete_range_and_edit,                KeyCode_C, KeyCode_Alt);
-    Bind(kill_to_end_of_line,                  KeyCode_C, KeyCode_Shift);
+    Bind(KillToEndOfLine,                  KeyCode_C, KeyCode_Shift);
     Bind(replace_in_range,                     KeyCode_R, KeyCode_Alt);
     Bind(replace_in_buffer,                    KeyCode_R, KeyCode_Alt, KeyCode_Control);
     Bind(duplicate_line,                       KeyCode_J, KeyCode_Alt, KeyCode_Control);
-    Bind(toggle_build_panel,                   KeyCode_Tick);
-    Bind(build_project,                        KeyCode_M, KeyCode_Alt);
+    Bind(ToggleBuildPannel,                   KeyCode_Tick);
+    Bind(BuildProject,                        KeyCode_M, KeyCode_Alt);
     Bind(list_all_functions_all_buffers_lister,     KeyCode_P, KeyCode_Alt, KeyCode_Control);
     Bind(list_all_functions_current_buffer_lister,  KeyCode_P, KeyCode_Alt);
+    Bind(ReplayKeyboardMacro,                 KeyCode_Period, KeyCode_Control);
+    Bind(keyboard_macro_start_recording,       KeyCode_F1);
+    Bind(keyboard_macro_finish_recording,      KeyCode_F2);
+    Bind(keyboard_macro_finish_recording,      KeyCode_Escape);
+    Bind(LastSearchForward,                        KeyCode_N);
+    Bind(LastSearchBackward,                       KeyCode_N, KeyCode_Shift);
     
     //
     SelectMap(edit_id);
-    ParentMap(file_id);
+    ParentMap(global_id);
     
-    Bind(enter_normal_mode,                    KeyCode_CapsLock);
-    Bind(enter_normal_mode,                    KeyCode_Escape);
+    
+    
+    Bind(EnterNormalMode,                      KeyCode_CapsLock);
+    Bind(EnterNormalMode,                      KeyCode_Escape);
     Bind(backspace_alpha_numeric_boundary,     KeyCode_Backspace, KeyCode_Control);
-    Bind(backspace_delete_whole_word,          KeyCode_Backspace, KeyCode_Alt);
+    Bind(BackspaceDeleteWholeWord,             KeyCode_Backspace, KeyCode_Alt);
     Bind(move_line_up,                         KeyCode_K, KeyCode_Control);
     Bind(move_line_down,                       KeyCode_J, KeyCode_Control);
     Bind(goto_beginning_of_file,               KeyCode_Home);
     Bind(goto_end_of_file,                     KeyCode_End);
-    Bind(word_complete,                        KeyCode_Tab);
     Bind(move_left_whitespace_boundary,        KeyCode_Left, KeyCode_Control);
     Bind(move_right_whitespace_boundary,       KeyCode_Right, KeyCode_Control);
     Bind(move_up_to_blank_line_end,            KeyCode_K, KeyCode_Alt);
@@ -639,7 +386,7 @@ marko_setup_bindings(Mapping* mapping, i64 global_id, i64 file_id, i64 normal_id
     BindTextInput(write_text_and_auto_indent);
 }
 
-BUFFER_HOOK_SIG(marko_begin_buffer)
+BUFFER_HOOK_SIG(MarkoBeginBuffer)
 {
     ProfileScope(app, "begin buffer");
     
@@ -659,11 +406,6 @@ BUFFER_HOOK_SIG(marko_begin_buffer)
                     string_match(ext, string_u8_litexpr("c")) ||
                     string_match(ext, string_u8_litexpr("hpp")) ||
                     string_match(ext, string_u8_litexpr("cc"))){
-                    treat_as_code = true;
-                }
-                if (string_match(ext, string_u8_litexpr("cs")) ||
-                    string_match(ext, string_u8_litexpr("mdesk"))) 
-                {
                     treat_as_code = true;
                 }
                 
@@ -690,7 +432,6 @@ BUFFER_HOOK_SIG(marko_begin_buffer)
                     }
                     parse_context_id = parse_context_language_rust;
                 }
-                
                 if (string_match(ext, string_u8_litexpr("cpp")) ||
                     string_match(ext, string_u8_litexpr("h")) ||
                     string_match(ext, string_u8_litexpr("c")) ||
@@ -774,7 +515,7 @@ BUFFER_HOOK_SIG(marko_begin_buffer)
         }
     }
     
-    enter_normal_mode(app);
+    EnterNormalMode(app);
     
     // no meaning for return
     return(0);
@@ -784,6 +525,8 @@ BUFFER_HOOK_SIG(marko_begin_buffer)
 void
 custom_layer_init(Application_Links *app){
     Thread_Context *tctx = get_thread_context(app);
+    Base_Allocator* allocator = get_base_allocator_system();
+    global_main_arena = make_arena(allocator, 16384);
     
     // Base 4coder init
     default_framework_init(app);
@@ -792,15 +535,14 @@ custom_layer_init(Application_Links *app){
     mapping_init(tctx, &framework_mapping);
     
     String_ID global_map_id = vars_save_string_lit("keys_global");
-    String_ID file_map_id = vars_save_string_lit("keys_file");
-    normal_map_id = vars_save_string_lit("keys_normal");
+    normal_map_id = vars_save_string_lit("keys_file");
     edit_map_id = vars_save_string_lit("keys_edit");
     
     // setup_essential_mapping(&framework_mapping, global_map_id, file_map_id, normal_map_id);
-	marko_setup_bindings(&framework_mapping, global_map_id, file_map_id, normal_map_id, edit_map_id);
+	MarkoSetupBindings(&framework_mapping, global_map_id, normal_map_id, edit_map_id);
     
-    set_custom_hook(app, HookID_BeginBuffer, marko_begin_buffer);
-    // set_current_mapid(app, normal_map_id);
+    set_custom_hook(app, HookID_BeginBuffer, MarkoBeginBuffer);
+    
 }
 
 #endif //FCODER_DEFAULT_BINDINGS
