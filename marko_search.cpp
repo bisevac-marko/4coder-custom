@@ -1,7 +1,7 @@
 
 function void
-isearch(Application_Links *app, Scan_Direction start_scan, i64 first_pos,
-        String_Const_u8 query_init){
+MB_ISearch(Application_Links *app, Scan_Direction start_scan, i64 first_pos,
+           String_Const_u8 query_init){
     View_ID view = get_active_view(app, Access_ReadVisible);
     Buffer_ID buffer = view_get_buffer(app, view, Access_ReadVisible);
     if (!buffer_exists(app, buffer)){
